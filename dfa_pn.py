@@ -11,13 +11,13 @@ embeddings_folder =
 output_folder = os.path.join(embeddings_folder, "dfa_results")
 file_pattern_suffix = "_embeddings.csv"
 
-min_length_for_dfa = 100 
-min_window = 4
-n_scales = 20
-max_window_fraction = 4
-detrend_order = 1
-n_shuffle_surrogates = 500
-loglog_linearity_threshold = 0.90
+min_length_for_dfa = 100       # minimum series length
+min_window = 4                 # minimum window size
+n_scales = 20                  # number of log-spaced scales
+max_window_fraction = 4        # maximum window = len(series) // max_window_fraction
+detrend_order = 1              # linear
+n_shuffle_surrogates = 500     # number of shuffles
+loglog_linearity_threshold = 0.90    # threshold log-log
 
 sns.set(style="whitegrid", font_scale=1.05)
 
@@ -25,7 +25,10 @@ def compute_fluctuations(cum_signal, nvals, order=1):
     fluctuations = []
     L = len(cum_signal)
     for n in nvals:
+        # non-overlapping windows of size n
         segments = [cum_signal[i:i+n] for i in range(0, L, n) if len(cum_signal[i:i+n]) == n]
+
+        # inverse (mitigate edge effects + stability)
         segments_inv = [np.flip(cum_signal)[i:i+n] for i in range(0, L, n) if len(cum_signal[i:i+n]) == n]
         segments.extend(segments_inv)
 
@@ -35,9 +38,11 @@ def compute_fluctuations(cum_signal, nvals, order=1):
 
         detrended_rms = []
         for seg in segments:
+            # fitting of polynomial in each segment
             coeffs = np.polyfit(np.arange(n), seg, order)
             trend = np.polyval(coeffs, np.arange(n))
             detrended = seg - trend
+            # RMS fluctuation after detrending
             detrended_rms.append(np.sqrt(np.mean(detrended**2)))
 
         fluctuations.append(np.mean(detrended_rms))
@@ -49,7 +54,7 @@ def dfa(signal, min_window=4, n_scales=20, order=1, return_diagnostics=False):
     s = np.asarray(signal).astype(float)
     if len(s) < max(min_length_for_dfa, 2 * min_window):
         return np.nan, None, None, np.nan
-
+    # integrate
     cum_sig = np.cumsum(s - np.mean(s))
 
     max_window = max(min_window + 1, len(cum_sig) // max(2, max_window_fraction))
@@ -58,6 +63,7 @@ def dfa(signal, min_window=4, n_scales=20, order=1, return_diagnostics=False):
     if len(nvals) < 3:
         return np.nan, None, None, np.nan
 
+    # RMS fluctuations at each window scale
     fluctuations = compute_fluctuations(cum_sig, nvals, order=order)
     valid = ~np.isnan(fluctuations) & (fluctuations > 0)
     if valid.sum() < 2:
@@ -66,6 +72,7 @@ def dfa(signal, min_window=4, n_scales=20, order=1, return_diagnostics=False):
     nvals_v = nvals[valid]
     Fv = fluctuations[valid]
 
+    # fit slope in log-log space
     if loglog_corr < loglog_linearity_threshold:
         return np.nan, nvals_v, Fv, loglog_corr
 
@@ -75,7 +82,7 @@ def dfa(signal, min_window=4, n_scales=20, order=1, return_diagnostics=False):
             return alpha, nvals_v, Fv, loglog_corr
         return alpha, nvals_v, Fv, loglog_corr
 
-
+# shuffled nulls
 def generate_scramble_nulls(series, n_iter=500):
     alphas = []
     for _ in range(n_iter):
@@ -84,18 +91,21 @@ def generate_scramble_nulls(series, n_iter=500):
         alphas.append(a)
     return np.array(alphas)
 
+# plots
 def plot_diagnostics(participant, signal, nvals, fluctuations, alpha, loglog_corr, outdir, nulls=None):
     if not os.path.exists(outdir):
         os.makedirs(outdir)
 
     plt.figure(figsize=(18, 12))
 
+    # raw cosine similarity
     plt.subplot(2, 2, 1)
     plt.plot(signal, color='gray', lw=1)
     plt.xlabel("Token index")
     plt.ylabel("Cosine similarity")
     plt.title(f"{participant}: similarity time series")
 
+    #linear
     plt.subplot(2, 2, 2)
     if nvals is not None and fluctuations is not None:
         plt.plot(nvals, fluctuations, 'o-', color='C0', linewidth=1.5)
@@ -112,6 +122,7 @@ def plot_diagnostics(participant, signal, nvals, fluctuations, alpha, loglog_cor
     else:
         plt.text(0.5, 0.5, 'Insufficient data', ha='center')
 
+    # log-log
     plt.subplot(2, 2, 3)
     if nvals is not None and fluctuations is not None:
         plt.plot(nvals, fluctuations, 'o-', color='C1', linewidth=1.5)
@@ -127,6 +138,7 @@ def plot_diagnostics(participant, signal, nvals, fluctuations, alpha, loglog_cor
         except Exception:
             pass
 
+    # null distribution
     plt.subplot(2, 2, 4)
     if nulls is not None and len(nulls) > 0:
         sns.kdeplot(nulls, fill=True, color='orange')
@@ -173,6 +185,7 @@ for idx, fname in enumerate(all_files, start=1):
         else:
             arr = arr.astype(float)
 
+        # array cosine similarity continuous
         sims = [cosine_similarity(arr[i:i+1], arr[i-1:i])[0, 0] for i in range(1, arr.shape[0])]
         sims = np.array(sims)
 
@@ -209,6 +222,7 @@ for idx, fname in enumerate(all_files, start=1):
             "pnr": float(pnr)
         })
 
+        #individual plots
         plot_diagnostics(participant, sims, nvals, fluctuations, alpha, loglog_corr, output_folder, nulls=null_shuffle)
 
     except Exception as e:
@@ -219,6 +233,7 @@ results_csv = os.path.join(output_folder, "dfa_summary.csv")
 results_df.to_csv(results_csv, index=False)
 print(f"\n Saved to {results_csv}")
 
+# group-level plots
 # if not results_df.empty and results_df["alpha"].notna().any():
 #     plt.figure(figsize=(10, 6))
 #     sns.kdeplot(data=results_df, x="alpha", fill=True, color="blue", alpha=0.3, linewidth=2,
